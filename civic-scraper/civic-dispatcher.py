@@ -1,10 +1,11 @@
 import sys
 import uuid
 import time
-
+import json
+from configparser import ConfigParser
 from iddt import Dispatcher
 from iddt import Daemon
-
+import requests
 from threading import Timer
 
 import logging
@@ -16,7 +17,7 @@ logger = logging.getLogger("civicdocs.civic-scraper")
 class CivicDispatcherDaemon(Daemon):
 
     def __init__(self, pidfile):
-        super(CivicDispatcherDaemon, self).__init__(pidfile, stdout='/tmp/stdout.txt')
+        super(CivicDispatcherDaemon, self).__init__(pidfile)
         self.dispatcher = CivicDispatcher()
         self._running = True
 
@@ -24,9 +25,10 @@ class CivicDispatcherDaemon(Daemon):
         '''
         Get's called by the Daemon class once detached from
         the main application instance.  This function sets up the
-        status call-in timer as well as sits and trys to grab 
+        status call-in timer as well as sits and trys to grab
         new jobs from the mothership.
         '''
+
         try:
             self.timer = Timer(60 * 60, self.tick)
             self.timer.start()
@@ -40,7 +42,8 @@ class CivicDispatcherDaemon(Daemon):
                     # try not to hammer the server *too* bad
                     time.sleep(1)
         except Exception as e:
-            print(str(e))        
+            logging.error('Error: {0}'.format(str(e)))
+            stop()
 
     def stop(self):
         self._running = False
@@ -67,18 +70,49 @@ class CivicDispatcher(Dispatcher):
         '''
         super(CivicDispatcher, self).__init__(*args, **kwargs)
         self.dispatch_count = 0
+        self.load_config()
+
+    def load_config(self):
+        '''
+        Loads the configuration from disk.
+        '''
+        try:
+            config = ConfigParser()
+            config.read('scraper.cfg')
+            self.scraper_id = config.get('dispatcher', 'scraper_id')
+            self.jobs_url = config.get('dispatcher', 'jobs_url')
+            self.status_url = config.get('dispatcher', 'status_url')
+            logging.info('Scraper: {0}'.format(self.scraper_id))
+            logging.info('Jobs from: {0}'.format(self.jobs_url))
+            logging.info('Statuses to: {0}'.format(self.status_url))
+
+        except:
+            logging.error("Unable to load scraper.cfg file.")
+            logging.error("The following fields must be included under")
+            logging.error("[dispatcher] section within the scraper.cfg file:")
+            logging.error("    jobs_url")
+            logging.error("    status_url")
+            logging.error("    scraper_id")
+            logging.error("Please check the scraper.cfg file, and try again.")
+            self.stop()
 
     def get_job(self):
         '''
         Get's a job from the mothership.
         '''
+        job = None
+        r = requests.get(self.jobs_url)
+        if r.status_code is 200:
+            job = json.loads(r.text)
         pass
 
     def dispatch_job(self, job):
         '''
         Dispatches a job to the waiting workers.
         '''
-        pass
+        if job is not None:
+            # note: this is blocking until complete
+            dispatch(job)
 
     def report_satus(self, job):
         '''
@@ -109,4 +143,3 @@ if __name__ == '__main__':
         logger.warning('show cmd deamon usage')
         print("Usage: {} start|stop|restart".format(sys.argv[0]))
         sys.exit(2)
- 

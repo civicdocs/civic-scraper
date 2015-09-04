@@ -15,7 +15,7 @@ logger = logging.getLogger("civicdocs.civic-scraper")
 class CivicWorker(Worker):
     '''
     CivicWorker class inherits from iddt.Worker.  This class performs
-    all of the web scraping and document discovery.  This class also 
+    all of the web scraping and document discovery.  This class also
     sends documents to the monthership as they are found.
     '''
 
@@ -34,28 +34,29 @@ class CivicWorker(Worker):
         '''
         Loads the configuration from disk.
         '''
-        if True:
-        #try:
+        try:
             config = ConfigParser()
             config.read('scraper.cfg')
-            self.scraper_id = config.get('scraper', 'scraper_id')
-            self.document_url = config.get('scraper', 'document_url')
-            self.status_url = config.get('scraper', 'status_url')
-            self.doc_types = config.get('scraper', 'doc_types').split(',')
+            self.scraper_id = config.get('worker', 'scraper_id')
+            self.document_url = config.get('worker', 'document_url')
+            self.status_url = config.get('worker', 'status_url')
+            self.doc_types = config.get('worker', 'doc_types').split(',')
             logging.info('Scraper: {0}'.format(self.scraper_id))
             logging.info('Documents to: {0}'.format(self.document_url))
             logging.info('Statuses to: {0}'.format(self.status_url))
-            logging.info('Document Types: {0}'.format(', '.join(self.doc_types)))
+            logging.info(('Document Types:'
+                          ' {0}').format(', '.join(self.doc_types)))
 
-#        except:
-#            logging.error("Unable to load scraper.cfg file.")
-#            logging.error("The following fields must be included under")
-#            logging.error("[scraper] section within the scraper.cfg file:")
-#            logging.error("    document_url")
-#            logging.error("    report_url")
-#            logging.error("Please check the scraper.cfg file, and try again.")
-#            self.stop()
-        
+        except:
+            logging.error("Unable to load scraper.cfg file.")
+            logging.error("The following fields must be included under")
+            logging.error("[worker] section within the scraper.cfg file:")
+            logging.error("    document_url")
+            logging.error("    report_url")
+            logging.error("    scraper_id")
+            logging.error("Please check the scraper.cfg file, and try again.")
+            self.stop()
+
     def new_doc(self, document):
         '''
         This is a call back from the Worker class.  It uses filters
@@ -75,10 +76,11 @@ class CivicWorker(Worker):
                     payload[key] = str(payload[key])
             r = requests.post(self.document_url, data=payload)
             if r.status_code == 200:
-                logging.info('Document Registered: {0}'.format(document['url']))
+                logging.info(('Document Registered: '
+                             '{0}').format(document['url']))
             else:
-                logging.error('Document not registered!  Error: {0}'.format(r.status_code))
-                
+                logging.error(('Document not registered!  '
+                              'Error: {0}').format(r.status_code))
 
     def report_status(self):
         '''
@@ -86,11 +88,11 @@ class CivicWorker(Worker):
         '''
         uptime = datetime.datetime.now() - self.launch_datetime
         status = dict(
-           scraper_id = self.scraper_id,
-           worker_id = self.worker_id,
-           document_count = self.document_count,
-           uptime = uptime.total_seconds(),
-           bandwidth = self.bandwidth,
+           scraper_id=self.scraper_id,
+           worker_id=self.worker_id,
+           document_count=self.document_count,
+           uptime=uptime.total_seconds(),
+           bandwidth=self.bandwidth,
         )
         r = requests.post(self.status_url, data=status)
         if r.status_code != 200:
