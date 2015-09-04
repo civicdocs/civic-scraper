@@ -107,12 +107,7 @@ class CivicWorker(Worker):
         self.document_count = 0
         restart()
 
-worker = CivicWorker()
-worker.register_callback(worker.new_doc)
-worker.run()
 
-
-'''
 if __name__ == '__main__':
     pidfile = '/tmp/worker.pid'
     if len(sys.argv) == 3:
@@ -135,4 +130,3 @@ if __name__ == '__main__':
     else:
         print("Usage: {} start|stop|restart".format(sys.argv[0]))
         sys.exit(2)
-'''
