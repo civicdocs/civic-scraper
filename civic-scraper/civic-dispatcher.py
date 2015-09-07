@@ -1,6 +1,7 @@
 import sys
 import uuid
 import time
+import datetime
 import json
 from configparser import ConfigParser
 from iddt import Dispatcher
@@ -16,10 +17,12 @@ logger = logging.getLogger("civicdocs.civic-scraper")
 
 class CivicDispatcherDaemon(Daemon):
 
-    def __init__(self, pidfile):
+    def __init__(self, pidfile, tick_rate=60*60):
         super(CivicDispatcherDaemon, self).__init__(pidfile)
+
         self.dispatcher = CivicDispatcher()
         self._running = True
+        self.tick_rate = tick_rate
 
     def run(self):
         '''
@@ -30,20 +33,30 @@ class CivicDispatcherDaemon(Daemon):
         '''
 
         try:
-            self.timer = Timer(60 * 60, self.tick)
+            self.timer = Timer(self.tick_rate, self.tick)
             self.timer.start()
 
             while(self._running):
-                job = self.dispatcher.get_job()
-                if job is not None:
-                    # blocking
-                    dispatch_job(job)
+                success = self.dispatcher.get_job()
+                if success:
+                    logging.info(
+                        "Dispatching URL: {0}".format(
+                            self.dispatcher.current_job['url']
+                        )
+                    )
+                    # note: blocking
+                    self.dispatcher.dispatch_job()
+                    logging.info(
+                        "Job Complete for URL: {0}".format(
+                            self.dispatcher.current_job['url']
+                        )
+                    )
                 else:
-                    # try not to hammer the server *too* bad
-                    time.sleep(1)
+                    # try not to hammer the server *too* bad ...
+                    time.sleep(5)
         except Exception as e:
             logging.error('Error: {0}'.format(str(e)))
-            stop()
+            self.stop()
 
     def stop(self):
         self._running = False
@@ -53,8 +66,9 @@ class CivicDispatcherDaemon(Daemon):
         '''
         Get's called by the timer when it expires.
         '''
-        # restart the timer.
         if self._running:
+            self.dispatcher.report_status()
+            self.timer = Timer(self.tick_rate, self.tick)
             self.timer.start()
 
 
@@ -69,8 +83,19 @@ class CivicDispatcher(Dispatcher):
         Class Constructor.
         '''
         super(CivicDispatcher, self).__init__(*args, **kwargs)
-        self.dispatch_count = 0
+        self.launch_datetime = datetime.datetime.now()
+        self.reset()
         self.load_config()
+        self.announce()
+        self.update_config()
+
+    def reset(self):
+        '''
+        Resets the items within the class that change over time.
+        '''
+        self.dispatcher_id = None
+        self.dispatch_count = 0
+        self.current_job = None
 
     def load_config(self):
         '''
@@ -79,48 +104,151 @@ class CivicDispatcher(Dispatcher):
         try:
             config = ConfigParser()
             config.read('scraper.cfg')
-            self.scraper_id = config.get('dispatcher', 'scraper_id')
+            # if we've already run, and announced successfully, we'll have a
+            # scraper ID that we can read from the config file.
+            if config.has_option('dispatcher', 'dispatcher_id'):
+                self.dispatcher_id = config.get('dispatcher', 'dispatcher_id')
+            else:
+                self.dispatcher_id = None
+            self.token = config.get('global', 'token')
+            #logging.info('Token: {0}'.format(self.token))
+            self.announce_url = config.get('dispatcher', 'announce_url')
+            logging.info('Announce: {0}'.format(self.announce_url))
             self.jobs_url = config.get('dispatcher', 'jobs_url')
-            self.status_url = config.get('dispatcher', 'status_url')
-            logging.info('Scraper: {0}'.format(self.scraper_id))
             logging.info('Jobs from: {0}'.format(self.jobs_url))
+            self.status_url = config.get('dispatcher', 'status_url')
             logging.info('Statuses to: {0}'.format(self.status_url))
-
         except:
             logging.error("Unable to load scraper.cfg file.")
-            logging.error("The following fields must be included under")
+            logging.error("The following fields must be included under the")
             logging.error("[dispatcher] section within the scraper.cfg file:")
+            logging.error("    announce_url")
             logging.error("    jobs_url")
             logging.error("    status_url")
-            logging.error("    scraper_id")
+            logging.error("The following fields must be included under the")
+            logging.error("[global] secont within the scraper.cfg file:")
+            logging.error("    token")
             logging.error("Please check the scraper.cfg file, and try again.")
-            self.stop()
+            raise Exception('Incorrect Configuration File.')
+
+    def announce(self):
+        '''
+        Announces the dispatcher's presense to the mothership, thus creating
+        an entry for it in the database.  If we have already announced ourself
+        ( if self.dispatcher_id has been populated from scraper.cfg ), then we
+        do not need to do this step.
+        '''
+        if self.dispatcher_id is None:
+            print("\r\n\r\n ANNOUNCE \r\n\r\n")
+            success = False
+            try:
+                announce_url = '{0}?token={1}'.format(
+                    self.announce_url, self.token,
+                )
+                r = requests.post(announce_url, data={})
+                if r.status_code == 200:
+                    dispatcher = json.loads(r.text)['dispatcher']
+                    self.dispatcher_id = dispatcher['id']
+                else:
+                    logging.error('Announce not sent! Error: {0}'.format(r.status_code))
+                success = True
+            except Exception as e:
+                logging.error('Announce not sent! Error: {0}'.format(e))
+            return success
+
+    def update_config(self):
+        '''
+        After we call announce(), we get assigned our scraper_id from the
+        mothership.  Once that happens, we need to update our config file 
+        on disk so that we don't make a duplicate of ourselves the next
+        time we call in, and so the workers running in this scraper
+        instance know what dispatcher they belong to.
+        '''
+        if self.dispatcher_id is None:
+            raise Exception(("update_config() must be called after announce() "
+                             "has successfully been issued a scraper_id"))
+        config = ConfigParser()
+        config.read('scraper.cfg') 
+        config['dispatcher']['dispatcher_id'] = self.dispatcher_id
+        with open('scraper.cfg', 'w') as f:
+            config.write(f)
 
     def get_job(self):
         '''
         Get's a job from the mothership.
         '''
-        job = None
-        r = requests.get(self.jobs_url)
-        if r.status_code is 200:
-            job = json.loads(r.text)
-        pass
+        success = False
+        try:
+            jobs_url = '{0}?token={1}'.format(
+                self.jobs_url, self.token
+            )
+            r = requests.get(jobs_url)
+            if r.status_code is 200:
+                job = json.loads(r.text)['job']
+                self.current_job = job
+                if self.current_job is not None:
+                    success = True
+            else:
+                logging.error('Job not retrieved! Error: {0}'.format(r.status_code))
+                success = False
+        except Exception as e:
+                logging.error('Job not retrieved! Error: {0}'.format(str(e)))
+        return success
 
-    def dispatch_job(self, job):
+    def dispatch_job(self):
         '''
         Dispatches a job to the waiting workers.
         '''
-        if job is not None:
+        if self.current_job is not None:
             # note: this is blocking until complete
-            dispatch(job)
+            payload = {
+                'target_url': self.current_job['url'],
+                'link_level': self.current_job['link_level'],
+                'allowed_domains': [],
+                'extras': {
+                    'job_id': self.current_job['id'],
+                },
+            }
+            self.dispatch(payload)
 
-    def report_satus(self, job):
+    def report_status(self):
         '''
         Reports the status of the dispatcher to the monthership.
         '''
-        pass
+        up_time = datetime.datetime.now() - self.launch_datetime
+        status = dict(
+            #token=self.token,
+            dispatcher_id=self.dispatcher_id,
+            dispatch_count=self.dispatch_count,
+            up_time=up_time.total_seconds(),
+            idle=self.idle,
+            current_job=self.current_job,
+        )
+        #print(status)
+        success = False
+        r = None
+        try:
+            status_url = '{0}/{1}?token={2}'.format(
+                self.status_url, self.dispatcher_id, self.token
+            )
+            r = requests.post(status_url, data=json.dumps(status))
+            if r.status_code == 200:
+                success = True
+            else:
+                logging.error('Status not sent! Error: {0}'.format(r.status_code))
+        except Exception as e:
+            logging.error('Status not sent! Error: {0}'.format(e))
+        return success
 
+#dispatcher = CivicDispatcher()
+#dispatcher.get_job()
+#time.sleep(1)
+#dispatcher.report_status()
 
+dispatcher_daemon = CivicDispatcherDaemon(pidfile='/tmp/civic-dispatcher.pid', tick_rate=10)
+dispatcher_daemon.run()
+
+'''
 if __name__ == '__main__':
     pidfile = '/tmp/worker.pid'
     if len(sys.argv) == 3:
@@ -143,3 +271,4 @@ if __name__ == '__main__':
         logger.warning('show cmd deamon usage')
         print("Usage: {} start|stop|restart".format(sys.argv[0]))
         sys.exit(2)
+'''
