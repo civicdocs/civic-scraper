@@ -54,11 +54,11 @@ class CivicWorker(Worker):
             self.status_url = config.get('worker', 'status_url')
             self.doc_types = config.get('worker', 'doc_types').split(',')
             #logging.info('Token: {0}'.format(self.scraper_id))
-            logging.info('Announce: {0}'.format(self.announce_url))
-            logging.info('Documents: {0}'.format(self.document_url))
-            logging.info('Status: {0}'.format(self.status_url))
-            logging.info(('Document Types:'
-                          ' {0}').format(', '.join(self.doc_types)))
+            #logging.info('Announce: {0}'.format(self.announce_url))
+            #logging.info('Documents: {0}'.format(self.document_url))
+            #logging.info('Status: {0}'.format(self.status_url))
+            #logging.info(('Document Types:'
+            #              ' {0}').format(', '.join(self.doc_types)))
 
         except:
             logging.error("Unable to load scraper.cfg file.")
@@ -105,7 +105,6 @@ class CivicWorker(Worker):
             )
             r = requests.post(announce_url, data=json.dumps(payload))
             if r.status_code == 200:
-                print("\r\n"); print(r.text); print("\r\n");
                 worker = json.loads(r.text)['worker']
                 self.worker_id = worker['id']
             else:
@@ -135,8 +134,6 @@ class CivicWorker(Worker):
                 payload[key] = document[key]
                 if key in dt_keys:
                     payload[key] = str(payload[key])
-            
-            print("\r\n"); print(payload); print("\r\n")
             try:
                 document_url = '{0}?token={1}'.format(
                     self.document_url, self.token,
@@ -169,10 +166,6 @@ class CivicWorker(Worker):
         if r.status_code != 200:
             logging.error('Status not sent! Error: {0}'.format(r.status_code))
         return r.status_code
-
-#worker = CivicWorker(pidfile='/tmp/civic-worker.pid')
-#worker.register_callback(worker.new_doc)
-#worker.run()
 
 if __name__ == '__main__':
     pidfile = '/tmp/worker.pid'

@@ -87,6 +87,7 @@ class CivicDispatcher(Dispatcher):
         self.reset()
         self.load_config()
         self.announce()
+        self.report_status()
         self.update_config()
 
     def reset(self):
@@ -96,6 +97,7 @@ class CivicDispatcher(Dispatcher):
         self.dispatcher_id = None
         self.dispatch_count = 0
         self.current_job = None
+        self.idle = False
 
     def load_config(self):
         '''
@@ -145,7 +147,10 @@ class CivicDispatcher(Dispatcher):
                 announce_url = '{0}?token={1}'.format(
                     self.announce_url, self.token,
                 )
-                r = requests.post(announce_url, data={})
+                payload = dict(
+                    dispatcher_id=self.dispatcher_id,
+                )
+                r = requests.post(announce_url, data=payload)
                 if r.status_code == 200:
                     dispatcher = json.loads(r.text)['dispatcher']
                     self.dispatcher_id = dispatcher['id']
@@ -200,7 +205,6 @@ class CivicDispatcher(Dispatcher):
         Dispatches a job to the waiting workers.
         '''
         if self.current_job is not None:
-            # note: this is blocking until complete
             payload = {
                 'target_url': self.current_job['url'],
                 'link_level': self.current_job['link_level'],
@@ -209,7 +213,10 @@ class CivicDispatcher(Dispatcher):
                     'job_id': self.current_job['id'],
                 },
             }
+            self.idle = False
+            # note: this is blocking until complete
             self.dispatch(payload)
+            self.idle = True
 
     def report_status(self):
         '''
@@ -245,13 +252,12 @@ class CivicDispatcher(Dispatcher):
 #time.sleep(1)
 #dispatcher.report_status()
 
-dispatcher_daemon = CivicDispatcherDaemon(pidfile='/tmp/civic-dispatcher.pid', tick_rate=10)
-dispatcher_daemon.run()
+#dispatcher_daemon = CivicDispatcherDaemon(pidfile='/tmp/civic-dispatcher.pid', tick_rate=10)
+#dispatcher_daemon.run()
 
-'''
 if __name__ == '__main__':
-    pidfile = '/tmp/worker.pid'
-    if len(sys.argv) == 3:
+    pidfile = '/tmp/civic-dispatcher.pid'
+    if len(sys.argv) >= 3:
         pidfile = sys.argv[2]
     daemon = CivicDispatcherDaemon(pidfile=pidfile)
     if len(sys.argv) >= 2:
@@ -271,4 +277,3 @@ if __name__ == '__main__':
         logger.warning('show cmd deamon usage')
         print("Usage: {} start|stop|restart".format(sys.argv[0]))
         sys.exit(2)
-'''
