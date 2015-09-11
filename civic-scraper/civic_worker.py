@@ -28,11 +28,10 @@ class CivicWorker(Worker):
         super(CivicWorker, self).__init__(*args, **kwargs)
 
         self.launch_datetime = datetime.datetime.now()
-        self.worker_id = '{0}-{1}'.format(str(uuid.uuid4()), str(uuid.uuid4()))
-        self.tick_rate = 1 #args['tick_rate']
+        self.worker_id = None
+        self.tick_rate = 60
         self.reset()
         self.load_config()
-        self.announce()
 
     def reset(self):
         '''
@@ -48,37 +47,36 @@ class CivicWorker(Worker):
             config = ConfigParser()
             config.read('scraper.cfg')
             self.dispatcher_id = config.get('dispatcher', 'dispatcher_id')
-            self.token = config.get('global', 'token')
+            self.scraper_id = config.get('global', 'scraper_id')
             self.announce_url = config.get('worker', 'announce_url')
             self.document_url = config.get('worker', 'document_url')
             self.status_url = config.get('worker', 'status_url')
             self.doc_types = config.get('worker', 'doc_types').split(',')
-            #logging.info('Token: {0}'.format(self.scraper_id))
-            #logging.info('Announce: {0}'.format(self.announce_url))
-            #logging.info('Documents: {0}'.format(self.document_url))
-            #logging.info('Status: {0}'.format(self.status_url))
-            #logging.info(('Document Types:'
-            #              ' {0}').format(', '.join(self.doc_types)))
-
+            if config.has_option('worker', 'tick_rate'):
+                self.tick_rate = int(config.get('worker', 'tick_rate'))
         except:
-            logging.error("Unable to load scraper.cfg file.")
-            logging.error("The following fields must be included under")
-            logging.error("[dispatcher] section within the scraper.cfg file:")
-            logging.error("    dispatcher_id")
-            logging.error("The following fields must be included under")
-            logging.error("[worker] section within the scraper.cfg file:")
-            logging.error("    announce_url")
-            logging.error("    document_url")
-            logging.error("    report_url")
-            logging.error("The following fields must be included under the")
-            logging.error("[global] secont within the scraper.cfg file:")
-            logging.error("    token")
-            logging.error("Please check the scraper.cfg file, and try again.")
+            logging.error(("Unable to load scraper.cfg file."
+                           "The following fields must be included under"
+                           "[dispatcher] section within the scraper.cfg file:"
+                           "    dispatcher_id"
+                           "The following fields must be included under"
+                           "[worker] section within the scraper.cfg file:"
+                           "    announce_url"
+                           "    document_url"
+                           "    report_url"
+                           "The following fields must be included under the"
+                           "[global] secont within the scraper.cfg file:"
+                           "    scraper_id"
+                           "Check the scraper.cfg file, and try again."))
             self.stop()
 
+    def start(self):
+        self.announce()
+        super(CivicWorker, self).start()
+
     def run(self):
-        #self.timer = Timer(self.tick_rate, self.tick)
-        #self.timer.start()
+        self.timer = Timer(self.tick_rate, self.tick)
+        self.timer.start()
         super(CivicWorker, self).run()
 
     def tick(self):
@@ -97,18 +95,22 @@ class CivicWorker(Worker):
         worker = None
         success = False
         try:
-            announce_url = '{0}?token={1}'.format(
-                self.announce_url, self.token,
-            )
+            up_time = datetime.datetime.now() - self.launch_datetime
             payload = dict(
+                scraper_id=self.scraper_id,
                 dispatcher_id=self.dispatcher_id,
+                document_count=self.document_count,
+                up_time=up_time.total_seconds(),
+                bandwidth=self.bandwidth,
             )
-            r = requests.post(announce_url, data=json.dumps(payload))
+            r = requests.post(self.announce_url, data=json.dumps(payload))
             if r.status_code == 200:
-                worker = json.loads(r.text)['worker']
+                worker = json.loads(r.text)['workers']
                 self.worker_id = worker['id']
+                print('ID: {0}'.format(self.worker_id))
             else:
-                logging.error('Announce not sent! Error: {0}'.format(r.status_code))
+                logging.error(('Announce not sent! '
+                               'Error: {0}').format(r.status_code))
                 success = False
             success = True
         except Exception as e:
@@ -121,22 +123,23 @@ class CivicWorker(Worker):
         to deturmine if the document is of interest, and then sends
         the document to the monther ship.
         '''
-        logging.info("New Document Found!: {0} - {1}".format(document['doc_type'], document['url']))
+        logging.info("New Document Found!: {0} - {1}".format(
+            document['doc_type'], document['url'])
+        )
         if document['doc_type'] in self.doc_types:
             self.document_count += 1
-            payload = {}
-            dt_keys = [
-                'typed_datetime',
-                'creation_datetime',
-            ]
-            del document['_id'] # remove mongo _id key,val
-            for key in document:
-                payload[key] = document[key]
-                if key in dt_keys:
-                    payload[key] = str(payload[key])
+            payload = dict(
+                name='',
+                description='',
+                url=document['url'],
+                source_url=document['source_url'],
+                source_url_title=document['source_url_title'],
+                link_text=document['link_text'],
+                doc_type=document['doc_type'],
+            )
             try:
-                document_url = '{0}?token={1}'.format(
-                    self.document_url, self.token,
+                document_url = self.document_url.replace(
+                    '{id}', self.worker_id
                 )
                 r = requests.post(document_url, data=json.dumps(payload))
                 if r.status_code == 200:
@@ -146,26 +149,35 @@ class CivicWorker(Worker):
                     logging.error(('Document not registered!  '
                                    'Error: {0}').format(r.status_code))
             except Exception as e:
-                 logging.error(('Document not registered!  '
-                              'Error: {0}').format(str(e)))
+                logging.error(('Document not registered!  '
+                               'Error: {0}').format(str(e)))
 
     def report_status(self):
         '''
         Reports the workers status to the mothership
         '''
         up_time = datetime.datetime.now() - self.launch_datetime
-        status = dict(
-           #token=self.token,
-           worker_id=self.worker_id,
+        payload = dict(
+           scraper_id=self.scraper_id,
+           dispatcher_id=self.dispatcher_id,
            document_count=self.document_count,
            up_time=up_time.total_seconds(),
            bandwidth=self.bandwidth,
         )
         success = False
-        r = requests.post(self.status_url, data=status)
-        if r.status_code != 200:
-            logging.error('Status not sent! Error: {0}'.format(r.status_code))
-        return r.status_code
+        try:
+            status_url = self.status_url.replace('{id}', self.worker_id)
+            r = requests.put(status_url, data=json.dumps(payload))
+            if r.status_code == 200:
+                logging.info("Status sent.")
+                success = True
+            else:
+                logging.error(('Status not sent! '
+                               'Error: {0}').format(r.status_code))
+        except Exception as e:
+            logging.error('Status not sent! Error: {0}'.format(str(e)))
+        return success
+
 
 if __name__ == '__main__':
     pidfile = '/tmp/worker.pid'

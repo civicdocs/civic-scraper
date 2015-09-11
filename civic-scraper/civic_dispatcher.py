@@ -17,12 +17,12 @@ logger = logging.getLogger("civicdocs.civic-scraper")
 
 class CivicDispatcherDaemon(Daemon):
 
-    def __init__(self, pidfile, tick_rate=60*60):
+    def __init__(self, pidfile):
         super(CivicDispatcherDaemon, self).__init__(pidfile)
 
         self.dispatcher = CivicDispatcher()
         self._running = True
-        self.tick_rate = tick_rate
+        self.tick_rate = 60
 
     def run(self):
         '''
@@ -97,7 +97,7 @@ class CivicDispatcher(Dispatcher):
         self.dispatcher_id = None
         self.dispatch_count = 0
         self.current_job = None
-        self.idle = False
+        self.idle = True
 
     def load_config(self):
         '''
@@ -112,25 +112,23 @@ class CivicDispatcher(Dispatcher):
                 self.dispatcher_id = config.get('dispatcher', 'dispatcher_id')
             else:
                 self.dispatcher_id = None
-            self.token = config.get('global', 'token')
-            #logging.info('Token: {0}'.format(self.token))
+            self.scraper_id = config.get('global', 'scraper_id')
             self.announce_url = config.get('dispatcher', 'announce_url')
-            logging.info('Announce: {0}'.format(self.announce_url))
             self.jobs_url = config.get('dispatcher', 'jobs_url')
-            logging.info('Jobs from: {0}'.format(self.jobs_url))
             self.status_url = config.get('dispatcher', 'status_url')
-            logging.info('Statuses to: {0}'.format(self.status_url))
+            if config.has_option('dispatcher', 'tick_rate'):
+                self.tick_rate = config.get('dispatcher', 'tick_rate')
         except:
-            logging.error("Unable to load scraper.cfg file.")
-            logging.error("The following fields must be included under the")
-            logging.error("[dispatcher] section within the scraper.cfg file:")
-            logging.error("    announce_url")
-            logging.error("    jobs_url")
-            logging.error("    status_url")
-            logging.error("The following fields must be included under the")
-            logging.error("[global] secont within the scraper.cfg file:")
-            logging.error("    token")
-            logging.error("Please check the scraper.cfg file, and try again.")
+            logging.error(("Unable to load scraper.cfg file."
+                           "The following fields must be included under the"
+                           "[dispatcher] section within the scraper.cfg file:"
+                           "    announce_url"
+                           "    jobs_url"
+                           "    status_url"
+                           "The following fields must be included under the"
+                           "[global] secont within the scraper.cfg file:"
+                           "    scraper_id"
+                           "Check the scraper.cfg file, and try again."))
             raise Exception('Incorrect Configuration File.')
 
     def announce(self):
@@ -141,21 +139,26 @@ class CivicDispatcher(Dispatcher):
         do not need to do this step.
         '''
         if self.dispatcher_id is None:
-            print("\r\n\r\n ANNOUNCE \r\n\r\n")
             success = False
             try:
-                announce_url = '{0}?token={1}'.format(
-                    self.announce_url, self.token,
-                )
+                up_time = datetime.datetime.now() - self.launch_datetime
+                current_job_id = None
+                if self.current_job:
+                    current_job_id = self.current_job['id']
                 payload = dict(
-                    dispatcher_id=self.dispatcher_id,
+                    scraper_id=self.scraper_id,
+                    dispatch_count=self.dispatch_count,
+                    up_time=up_time.total_seconds(),
+                    idle=self.idle,
+                    current_job_id=current_job_id,
                 )
-                r = requests.post(announce_url, data=payload)
+                r = requests.post(self.announce_url, data=json.dumps(payload))
                 if r.status_code == 200:
-                    dispatcher = json.loads(r.text)['dispatcher']
+                    dispatcher = json.loads(r.text)['dispatchers']
                     self.dispatcher_id = dispatcher['id']
                 else:
-                    logging.error('Announce not sent! Error: {0}'.format(r.status_code))
+                    logging.error(('Announce not sent! '
+                                   'Error: {0}').format(r.status_code))
                 success = True
             except Exception as e:
                 logging.error('Announce not sent! Error: {0}'.format(e))
@@ -164,7 +167,7 @@ class CivicDispatcher(Dispatcher):
     def update_config(self):
         '''
         After we call announce(), we get assigned our scraper_id from the
-        mothership.  Once that happens, we need to update our config file 
+        mothership.  Once that happens, we need to update our config file
         on disk so that we don't make a duplicate of ourselves the next
         time we call in, and so the workers running in this scraper
         instance know what dispatcher they belong to.
@@ -173,7 +176,7 @@ class CivicDispatcher(Dispatcher):
             raise Exception(("update_config() must be called after announce() "
                              "has successfully been issued a scraper_id"))
         config = ConfigParser()
-        config.read('scraper.cfg') 
+        config.read('scraper.cfg')
         config['dispatcher']['dispatcher_id'] = self.dispatcher_id
         with open('scraper.cfg', 'w') as f:
             config.write(f)
@@ -184,9 +187,7 @@ class CivicDispatcher(Dispatcher):
         '''
         success = False
         try:
-            jobs_url = '{0}?token={1}'.format(
-                self.jobs_url, self.token
-            )
+            jobs_url = self.jobs_url.replace('{id}', self.dispatcher_id)
             r = requests.get(jobs_url)
             if r.status_code is 200:
                 job = json.loads(r.text)['job']
@@ -194,10 +195,12 @@ class CivicDispatcher(Dispatcher):
                 if self.current_job is not None:
                     success = True
             else:
-                logging.error('Job not retrieved! Error: {0}'.format(r.status_code))
+                logging.error(('Job not retrieved!'
+                               'Error: {0}').format(r.status_code))
                 success = False
         except Exception as e:
-                logging.error('Job not retrieved! Error: {0}'.format(str(e)))
+            logging.error('Job not retrieved! Error: {0}'.format(str(e)))
+        print(self.current_job)
         return success
 
     def dispatch_job(self):
@@ -223,37 +226,29 @@ class CivicDispatcher(Dispatcher):
         Reports the status of the dispatcher to the monthership.
         '''
         up_time = datetime.datetime.now() - self.launch_datetime
+        current_job_id = None
+        if self.current_job:
+            current_job_id = self.current_job['id']
         status = dict(
-            #token=self.token,
-            dispatcher_id=self.dispatcher_id,
+            scraper_id=self.scraper_id,
             dispatch_count=self.dispatch_count,
             up_time=up_time.total_seconds(),
             idle=self.idle,
-            current_job=self.current_job,
+            current_job_id=current_job_id,
         )
-        #print(status)
         success = False
-        r = None
         try:
-            status_url = '{0}/{1}?token={2}'.format(
-                self.status_url, self.dispatcher_id, self.token
-            )
-            r = requests.post(status_url, data=json.dumps(status))
+            status_url = self.status_url.replace('{id}', self.dispatcher_id)
+            r = requests.put(status_url, data=json.dumps(status))
             if r.status_code == 200:
                 success = True
             else:
-                logging.error('Status not sent! Error: {0}'.format(r.status_code))
+                logging.error(('Status not sent!'
+                               'Error: {0}').format(r.status_code))
         except Exception as e:
             logging.error('Status not sent! Error: {0}'.format(e))
         return success
 
-#dispatcher = CivicDispatcher()
-#dispatcher.get_job()
-#time.sleep(1)
-#dispatcher.report_status()
-
-#dispatcher_daemon = CivicDispatcherDaemon(pidfile='/tmp/civic-dispatcher.pid', tick_rate=10)
-#dispatcher_daemon.run()
 
 if __name__ == '__main__':
     pidfile = '/tmp/civic-dispatcher.pid'
