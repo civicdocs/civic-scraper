@@ -71,12 +71,13 @@ class CivicWorker(Worker):
             self.stop()
 
     def start(self):
-        self.announce()
+        #self.announce()
         super(CivicWorker, self).start()
 
     def run(self):
         self.timer = Timer(self.tick_rate, self.tick)
         self.timer.start()
+        self.announce()
         super(CivicWorker, self).run()
 
     def tick(self):
@@ -165,7 +166,8 @@ class CivicWorker(Worker):
            bandwidth=self.bandwidth,
         )
         success = False
-        try:
+        #try:
+        if True:
             status_url = self.status_url.replace('{id}', self.worker_id)
             r = requests.put(status_url, data=json.dumps(payload))
             if r.status_code == 200:
@@ -174,8 +176,8 @@ class CivicWorker(Worker):
             else:
                 logging.error(('Status not sent! '
                                'Error: {0}').format(r.status_code))
-        except Exception as e:
-            logging.error('Status not sent! Error: {0}'.format(str(e)))
+        #except Exception as e:
+        #    logging.error('Status not sent! Error: {0}'.format(str(e)))
         return success
 
 
